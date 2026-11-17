@@ -1,7 +1,10 @@
 (function () {
-    const STORAGE_KEY = 'dataextract_300_records_v1';
+    const STORAGE_KEY = 'dataextract_300_records_v2';
+    const MASTER_KEY = 'dataextract_300_master_v1';
+    
     const state = { 
         files: [], 
+        masterData: loadMasterData(),
         records: loadLocalRecords() 
     };
 
@@ -24,22 +27,30 @@
         try {
             const saved = localStorage.getItem(STORAGE_KEY);
             return saved ? JSON.parse(saved) : [];
-        } catch (e) {
-            console.error('Failed to load local records:', e);
-            return [];
-        }
+        } catch (e) { return []; }
     }
 
     function saveLocalRecords() {
+        try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state.records)); } catch (e) {}
+    }
+
+    function loadMasterData() {
         try {
-            localStorage.setItem(STORAGE_KEY, JSON.stringify(state.records));
-        } catch (e) {
-            console.error('Failed to save local records:', e);
-        }
+            const saved = localStorage.getItem(MASTER_KEY);
+            return saved ? JSON.parse(saved) : [];
+        } catch (e) { return []; }
+    }
+
+    function saveMasterData(data) {
+        try { localStorage.setItem(MASTER_KEY, JSON.stringify(data)); state.masterData = data; } catch (e) {}
     }
 
     function init() {
         if (!els.dropZone) return;
+        
+        // Add master list upload input dynamically to header or dropzone
+        setupMasterUploadUI();
+
         els.dropZone.addEventListener('click', () => els.fileInput.click());
         els.fileInput.addEventListener('change', (e) => handleFiles(e.target.files));
         
@@ -56,6 +67,52 @@
         if (els.exportBtn) els.exportBtn.addEventListener('click', exportToExcel);
         
         updateStats();
+    }
+
+    function setupMasterUploadUI() {
+        const dropZone = document.getElementById('dropZone');
+        if (!dropZone) return;
+
+        const masterDiv = document.createElement('div');
+        masterDiv.className = 'mt-3 pt-3 border-top';
+        masterDiv.innerHTML = `
+            <div class="small fw-bold text-secondary mb-1">Optional: Load Master Excel (with names & phones to auto-match Application IDs)</div>
+            <input type="file" id="masterFileInput" accept=".xlsx, .xls, .csv" class="form-control form-control-sm d-inline-block w-auto">
+            <span id="masterStatus" class="ms-2 small text-muted">${state.masterData.length > 0 ? `Master loaded (${state.masterData.length} records)` : 'No master list loaded'}</span>
+        `;
+        dropZone.appendChild(masterDiv);
+
+        document.getElementById('masterFileInput').addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = function(evt) {
+                try {
+                    const data = new Uint8Array(evt.target.result);
+                    const workbook = XLSX.read(data, { type: 'array' });
+                    const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+                    const json = XLSX.utils.sheet_to_json(firstSheet);
+                    
+                    // Normalize keys
+                    const normalized = json.map(row => {
+                        const name = String(row['NAME'] || row['Name'] || '').trim().toUpperCase();
+                        const phone = String(row['PHONE'] || row['Phone'] || '').trim();
+                        const lg = String(row['LG'] || row['Lg'] || row['LGA'] || '').trim();
+                        const ward = String(row['WARD'] || row['Ward'] || '').trim();
+                        const position = String(row['POSITION'] || row['Position'] || '').trim();
+                        const appNo = String(row['APPLICATION NO'] || row['Application No'] || row['APPLICATION_NO'] || '').trim();
+                        return { name, phone, lg, ward, position, applicationNo: appNo };
+                    });
+
+                    saveMasterData(normalized);
+                    document.getElementById('masterStatus').textContent = `Master loaded successfully (${normalized.length} records)!`;
+                    alert(`Master list loaded with ${normalized.length} records. Slips uploaded will now auto-match application IDs!`);
+                } catch (err) {
+                    alert('Error parsing master Excel file: ' + err.message);
+                }
+            };
+            reader.readAsArrayBuffer(file);
+        });
     }
 
     function handleFiles(fileList) {
@@ -108,12 +165,28 @@
                 } else {
                     text = await extractTextFromImage(file);
                 }
-                const parsed = parseExtractedText(text);
-                state.records.push(parsed);
+                
+                let record = parseExtractedText(text);
+
+                // MATCH AGAINST MASTER DATA IF APPLICATION NO IS MISSING OR TO ENRICH
+                if (state.masterData.length > 0) {
+                    const matched = state.masterData.find(m => 
+                        (record.phone && m.phone && m.phone.includes(record.phone.slice(-9))) ||
+                        (record.name && m.name && m.name.includes(record.name))
+                    );
+                    if (matched) {
+                        if (!record.applicationNo) record.applicationNo = matched.applicationNo;
+                        if (!record.lg && matched.lg) record.lg = matched.lg;
+                        if (!record.ward && matched.ward) record.ward = matched.ward;
+                        if (!record.position && matched.position) record.position = matched.position;
+                    }
+                }
+
+                state.records.push(record);
             } catch (err) {
                 console.error(`Error processing ${file.name}:`, err);
                 state.records.push({
-                    name: `Error: ${file.name} (${err.message || 'OCR Failed'})`,
+                    name: `Error: ${file.name}`,
                     phone: '', lg: '', ward: '', position: '', institution: '', applicationNo: ''
                 });
             }
@@ -150,7 +223,7 @@
                     const canvas = document.createElement('canvas');
                     let width = img.width;
                     let height = img.height;
-                    const maxDim = 1200; // Optimized for mobile memory
+                    const maxDim = 1200;
                     if (width > maxDim || height > maxDim) {
                         if (width > height) {
                             height = Math.round((height * maxDim) / width);
@@ -171,7 +244,6 @@
                         await worker.terminate();
                         resolve(ret.data.text);
                     } catch (err) {
-                        // Fallback to static recognize if worker fails
                         Tesseract.recognize(canvas, 'eng').then(res => {
                             resolve(res.data.text);
                         }).catch(e => reject(e));
@@ -229,7 +301,7 @@
                 <td><input type="text" value="${escapeHtml(r.ward)}" data-index="${idx}" data-field="ward" class="form-control form-control-sm table-input"></td>
                 <td><input type="text" value="${escapeHtml(r.position)}" data-index="${idx}" data-field="position" class="form-control form-control-sm table-input"></td>
                 <td><input type="text" value="${escapeHtml(r.institution)}" data-index="${idx}" data-field="institution" class="form-control form-control-sm table-input"></td>
-                <td><input type="text" value="${escapeHtml(r.applicationNo)}" data-index="${idx}" data-field="applicationNo" class="form-control form-control-sm table-input"></td>
+                <td><input type="text" value="${escapeHtml(r.applicationNo)}" data-index="${idx}" data-field="applicationNo" class="form-control form-control-sm table-input ${!r.applicationNo ? 'border-danger' : ''}" placeholder="Missing ID"></td>
                 <td class="text-center"><button class="btn btn-sm btn-outline-danger delete-row px-2 py-0" data-index="${idx}" title="Delete Row">&times;</button></td>
             `;
             els.tableBody.appendChild(tr);
