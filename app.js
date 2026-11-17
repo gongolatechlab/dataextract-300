@@ -1,11 +1,14 @@
 
 (function () {
     const MASTER_KEY = 'dataextract_300_enriched_master_v1';
+    const EXPORT_LIMIT = 310;
 
     const state = {
         files: [],
         records: loadLocalRecords(),
-        unmatchedFiles: []
+        unmatchedFiles: [],
+        exportSelection: null,
+        processing: false
     };
 
     const els = {
@@ -39,69 +42,93 @@
     function saveLocalRecords() {
         try {
             localStorage.setItem(MASTER_KEY, JSON.stringify(state.records));
-        } catch (e) {}
+        } catch (e) {
+            alert('Unable to save records. Your browser storage may be full.');
+        }
     }
 
-    // Generate unique internal references, not official application numbers.
-    function generateTemporaryID(existingIDs) {
-        let id;
+    function shuffle(array) {
+        const result = [...array];
+
+        for (let i = result.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [result[i], result[j]] = [result[j], result[i]];
+        }
+
+        return result;
+    }
+
+    function generateInternalReference(existing) {
+        let ref;
 
         do {
-            id = 'TEMP_' + Math.floor(10000000 + Math.random() * 90000000);
-        } while (existingIDs.has(id));
+            ref = 'REF_' +
+                Math.floor(10000000000 + Math.random() * 90000000000);
+        } while (existing.has(ref));
 
-        existingIDs.add(id);
-        return id;
+        existing.add(ref);
+        return ref;
     }
 
-    function assignTemporaryIDs() {
-        const existingIDs = new Set(
-            state.records
-                .map(r => r.temporaryReference)
-                .filter(Boolean)
-        );
+    function createGenerateButton() {
+        if (document.getElementById('generate310Btn')) return;
 
-        state.records.forEach(r => {
-            if (!r.applicationNo || !r.applicationNo.trim()) {
-                if (!r.temporaryReference) {
-                    r.temporaryReference = generateTemporaryID(existingIDs);
-                }
-            } else {
-                r.temporaryReference = '';
-            }
-        });
+        const btn = document.createElement('button');
 
-        saveLocalRecords();
+        btn.id = 'generate310Btn';
+        btn.type = 'button';
+        btn.className = 'btn btn-primary me-2';
+        btn.innerHTML =
+            '<i class="fa-solid fa-shuffle me-1"></i> Prepare 310 Records';
+
+        btn.addEventListener('click', generateSelection);
+
+        if (els.exportBtn && els.exportBtn.parentElement) {
+            els.exportBtn.parentElement.insertBefore(
+                btn,
+                els.exportBtn
+            );
+        } else {
+            els.dropZone.parentElement.appendChild(btn);
+        }
     }
 
     function init() {
         if (!els.dropZone) return;
 
+        createGenerateButton();
+
         updateMasterStatusUI();
 
         if (els.masterFileInput) {
-            els.masterFileInput.addEventListener('change', handleMasterUpload);
+            els.masterFileInput.addEventListener(
+                'change',
+                handleMasterUpload
+            );
         }
 
         if (els.filterSelect) {
-            els.filterSelect.addEventListener('change', renderTable);
+            els.filterSelect.addEventListener(
+                'change',
+                renderTable
+            );
         }
 
         els.dropZone.addEventListener('click', () => {
             if (state.records.length === 0) {
-                alert('Please upload your Master List Excel file in Step 1 first.');
-                if (els.masterFileInput) els.masterFileInput.focus();
+                alert('Please upload your Master List Excel file first.');
+                els.masterFileInput?.focus();
                 return;
             }
 
             els.fileInput.click();
         });
 
-        els.fileInput.addEventListener('change', (e) => {
+        els.fileInput.addEventListener('change', e => {
             handleFiles(e.target.files);
         });
 
-        els.dropZone.addEventListener('dragover', (e) => {
+        els.dropZone.addEventListener('dragover', e => {
             e.preventDefault();
             els.dropZone.classList.add('bg-light');
         });
@@ -110,25 +137,20 @@
             els.dropZone.classList.remove('bg-light');
         });
 
-        els.dropZone.addEventListener('drop', (e) => {
+        els.dropZone.addEventListener('drop', e => {
             e.preventDefault();
             els.dropZone.classList.remove('bg-light');
 
             if (state.records.length === 0) {
-                alert('Please upload your Master List Excel file in Step 1 first.');
+                alert('Please upload your Master List Excel file first.');
                 return;
             }
 
             handleFiles(e.dataTransfer.files);
         });
 
-        if (els.clearBtn) {
-            els.clearBtn.addEventListener('click', clearAll);
-        }
-
-        if (els.exportBtn) {
-            els.exportBtn.addEventListener('click', exportToExcel);
-        }
+        els.clearBtn?.addEventListener('click', clearAll);
+        els.exportBtn?.addEventListener('click', exportToExcel);
 
         updateStats();
     }
@@ -137,13 +159,20 @@
         if (!els.masterStatus) return;
 
         if (state.records.length > 0) {
-            els.masterStatus.className = 'mt-2 small fw-semibold text-success';
+            els.masterStatus.className =
+                'mt-2 small fw-semibold text-success';
+
             els.masterStatus.innerHTML =
-                `<i class="fa-solid fa-circle-check me-1"></i> Master list active (${state.records.length} records loaded). Ready to match slips.`;
+                `<i class="fa-solid fa-circle-check me-1"></i>
+                Master list active (${state.records.length} records loaded).
+                Ready to match slips.`;
         } else {
-            els.masterStatus.className = 'mt-2 small fw-semibold text-danger';
+            els.masterStatus.className =
+                'mt-2 small fw-semibold text-danger';
+
             els.masterStatus.innerHTML =
-                `<i class="fa-solid fa-circle-exclamation me-1"></i> Master list not loaded yet. Please upload your master Excel file first.`;
+                `<i class="fa-solid fa-circle-exclamation me-1"></i>
+                Master list not loaded yet. Please upload your master Excel file first.`;
         }
     }
 
@@ -157,66 +186,65 @@
             try {
                 const data = new Uint8Array(evt.target.result);
                 const workbook = XLSX.read(data, { type: 'array' });
-                const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+
+                const firstSheet =
+                    workbook.Sheets[workbook.SheetNames[0]];
+
                 const json = XLSX.utils.sheet_to_json(firstSheet);
 
                 state.records = json.map((row, idx) => {
-                    const sn = row['S/N'] || row['SN'] || (idx + 1);
-
-                    const name = String(
-                        row['NAME'] || row['Name'] || ''
-                    ).trim().toUpperCase();
-
-                    let rawPhone = String(
+                    let phone = String(
                         row['PHONE'] || row['Phone'] || ''
                     ).trim();
 
-                    if (rawPhone.length === 10 && !rawPhone.startsWith('0')) {
-                        rawPhone = '0' + rawPhone;
+                    if (phone.length === 10 && !phone.startsWith('0')) {
+                        phone = '0' + phone;
                     }
 
-                    const lg = String(
-                        row['LG'] || row['Lg'] || row['LGA'] || ''
-                    ).trim().toUpperCase();
-
-                    const ward = String(
-                        row['WARD'] || row['Ward'] || ''
-                    ).trim().toUpperCase();
-
-                    const position = String(
-                        row['POSITION'] || row['Position'] || ''
-                    ).trim().toUpperCase();
-
-                    const qualification = String(
-                        row['QUALIFICATION'] || row['Qualification'] || ''
-                    ).trim().toUpperCase();
-
-                    const applicationNo = String(
-                        row['APPLICATION NO'] ||
-                        row['Application No'] ||
-                        row['APPLICATION_NO'] || ''
-                    ).trim();
-
                     return {
-                        sn,
-                        name,
-                        phone: rawPhone,
-                        lg,
-                        ward,
-                        position,
-                        qualification,
-                        applicationNo,
-                        temporaryReference: ''
+                        sn: row['S/N'] || row['SN'] || idx + 1,
+
+                        name: String(
+                            row['NAME'] || row['Name'] || ''
+                        ).trim().toUpperCase(),
+
+                        phone: phone,
+
+                        lg: String(
+                            row['LG'] || row['Lg'] || row['LGA'] || ''
+                        ).trim().toUpperCase(),
+
+                        ward: String(
+                            row['WARD'] || row['Ward'] || ''
+                        ).trim().toUpperCase(),
+
+                        position: String(
+                            row['POSITION'] || row['Position'] || ''
+                        ).trim().toUpperCase(),
+
+                        qualification: String(
+                            row['QUALIFICATION'] ||
+                            row['Qualification'] || ''
+                        ).trim().toUpperCase(),
+
+                        applicationNo: String(
+                            row['APPLICATION NO'] ||
+                            row['Application No'] ||
+                            row['APPLICATION_NO'] || ''
+                        ).trim(),
+
+                        internalReference: ''
                     };
                 });
 
-                assignTemporaryIDs();
+                state.exportSelection = null;
 
+                saveLocalRecords();
                 updateMasterStatusUI();
                 updateStats();
 
                 alert(
-                    `Loaded ${state.records.length} records from Master List!\n\nTemporary references have been assigned to records missing application numbers.\n\nNow upload your PDFs or images in Step 2.`
+                    `Successfully loaded ${state.records.length} master records.\n\nUpload your documents to extract and match application numbers.`
                 );
 
             } catch (err) {
@@ -255,19 +283,23 @@
     }
 
     async function processDocuments() {
-        if (state.files.length === 0) return;
+        if (state.processing || state.files.length === 0) return;
+
+        state.processing = true;
+        state.exportSelection = null;
+        state.unmatchedFiles = [];
 
         if (els.progressContainer) {
             els.progressContainer.style.display = 'block';
         }
 
-        state.unmatchedFiles = [];
+        const filesToProcess = [...state.files];
 
-        for (let i = 0; i < state.files.length; i++) {
-            const file = state.files[i];
+        for (let i = 0; i < filesToProcess.length; i++) {
+            const file = filesToProcess[i];
 
             const pct = Math.round(
-                ((i + 1) / state.files.length) * 100
+                ((i + 1) / filesToProcess.length) * 100
             );
 
             if (els.progressBar) {
@@ -276,32 +308,18 @@
 
             if (els.progressText) {
                 els.progressText.textContent =
-                    `Scanning ${i + 1} of ${state.files.length}: ${file.name}`;
+                    `Scanning ${i + 1} of ${filesToProcess.length}: ${file.name}`;
             }
 
             try {
-                let text = '';
-
-                // PDF: extract text directly.
-                // Images: send directly to Tesseract OCR.
+                let text;
 
                 if (
                     file.type === 'application/pdf' ||
                     file.name.toLowerCase().endsWith('.pdf')
                 ) {
-                    if (els.progressText) {
-                        els.progressText.textContent =
-                            `Extracting PDF: ${file.name}`;
-                    }
-
                     text = await extractTextFromPDF(file);
-
                 } else {
-                    if (els.progressText) {
-                        els.progressText.textContent =
-                            `Scanning image directly: ${file.name}`;
-                    }
-
                     const result = await Tesseract.recognize(
                         file,
                         'eng'
@@ -315,33 +333,40 @@
                 let foundMatch = false;
 
                 if (extracted.applicationNo) {
-                    const cleanUpperText = text.toUpperCase().replace(/\s+/g, ' ');
+                    const cleanText = text
+                        .toUpperCase()
+                        .replace(/\s+/g, ' ');
 
-                    for (let r of state.records) {
-                        const phoneTail = r.phone ? r.phone.slice(-9) : '';
+                    for (const r of state.records) {
+                        const phoneTail = r.phone
+                            ? r.phone.slice(-9)
+                            : '';
 
                         const phoneMatch =
-                            (extracted.phone && phoneTail &&
+                            (extracted.phone &&
+                                phoneTail &&
                                 extracted.phone.includes(phoneTail)) ||
-                            (phoneTail && cleanUpperText.includes(phoneTail));
+                            (phoneTail &&
+                                cleanText.includes(phoneTail));
 
                         const nameTokens = r.name
                             .split(/\s+/)
                             .filter(t => t.length > 2);
 
                         const nameMatch = r.name && (
-                            cleanUpperText.includes(r.name) ||
+                            cleanText.includes(r.name) ||
                             (
                                 nameTokens.length >= 2 &&
-                                nameTokens.every(tok =>
-                                    cleanUpperText.includes(tok)
+                                nameTokens.every(token =>
+                                    cleanText.includes(token)
                                 )
                             )
                         );
 
                         if (phoneMatch || nameMatch) {
                             r.applicationNo = extracted.applicationNo;
-                            r.temporaryReference = '';
+                            r.internalReference = '';
+
                             foundMatch = true;
                             break;
                         }
@@ -350,12 +375,17 @@
 
                 if (!foundMatch) {
                     state.unmatchedFiles.push(
-                        `${file.name}${extracted.applicationNo ? ' (' + extracted.applicationNo + ')' : ''}`
+                        `${file.name}${extracted.applicationNo
+                            ? ' (' + extracted.applicationNo + ')'
+                            : ''}`
                     );
                 }
 
             } catch (err) {
-                console.error(`Error processing ${file.name}:`, err);
+                console.error(
+                    `Error processing ${file.name}:`,
+                    err
+                );
 
                 state.unmatchedFiles.push(
                     `${file.name} (Scan Error)`
@@ -363,8 +393,12 @@
             }
         }
 
-        // Keep unmatched records assigned their temporary references.
-        assignTemporaryIDs();
+        state.files = [];
+        state.processing = false;
+
+        if (els.fileInput) {
+            els.fileInput.value = '';
+        }
 
         if (
             state.unmatchedFiles.length > 0 &&
@@ -375,7 +409,6 @@
                 state.unmatchedFiles.join(', ');
 
             els.unmatchedAlert.style.display = 'block';
-
         } else if (els.unmatchedAlert) {
             els.unmatchedAlert.style.display = 'none';
         }
@@ -384,38 +417,32 @@
             els.progressText.textContent = 'Matching complete!';
         }
 
+        saveLocalRecords();
+        updateStats();
+
         setTimeout(() => {
             if (els.progressContainer) {
                 els.progressContainer.style.display = 'none';
             }
         }, 1500);
-
-        state.files = [];
-
-        if (els.fileInput) {
-            els.fileInput.value = '';
-        }
-
-        updateStats();
     }
 
     async function extractTextFromPDF(file) {
-        const arrayBuffer = await file.arrayBuffer();
+        const buffer = await file.arrayBuffer();
 
         const pdf = await pdfjsLib.getDocument({
-            data: arrayBuffer
+            data: buffer
         }).promise;
 
         let fullText = '';
 
         for (let i = 1; i <= pdf.numPages; i++) {
             const page = await pdf.getPage(i);
+            const content = await page.getTextContent();
 
-            const tokenized = await page.getTextContent();
-
-            if (tokenized.items.length === 0) {
+            if (content.items.length === 0) {
                 const viewport = page.getViewport({
-                    scale: 2.0
+                    scale: 2
                 });
 
                 const canvas = document.createElement('canvas');
@@ -427,7 +454,7 @@
 
                 await page.render({
                     canvasContext: ctx,
-                    viewport: viewport
+                    viewport
                 }).promise;
 
                 const result = await Tesseract.recognize(
@@ -436,9 +463,8 @@
                 );
 
                 fullText += result.data.text + '\n';
-
             } else {
-                fullText += tokenized.items
+                fullText += content.items
                     .map(item => item.str)
                     .join(' ') + '\n';
             }
@@ -450,26 +476,387 @@
     function parseFlexibleText(text) {
         const cleanText = text.replace(/\s+/g, ' ');
 
-        let appNo = '';
-
         const appMatch = cleanText.match(/(ADA_[0-9]+)/i);
 
-        if (appMatch) {
-            appNo = appMatch[1].toUpperCase();
-        }
-
-        let phone = '';
-
-        const phoneMatch = cleanText.match(/\b(0?[789][0-9]{9})\b/);
-
-        if (phoneMatch) {
-            phone = phoneMatch[1];
-        }
+        const phoneMatch = cleanText.match(
+            /\b(0?[789][0-9]{9})\b/
+        );
 
         return {
-            applicationNo: appNo,
-            phone: phone
+            applicationNo: appMatch
+                ? appMatch[1].toUpperCase()
+                : '',
+
+            phone: phoneMatch
+                ? phoneMatch[1]
+                : ''
         };
+    }
+
+    // Prepare exactly 310 records.
+    function generateSelection() {
+        if (state.processing) {
+            alert('Please wait until document scanning is complete.');
+            return;
+        }
+
+        if (state.records.length < EXPORT_LIMIT) {
+            alert(
+                `Your master list contains only ${state.records.length} records. At least 310 are required.`
+            );
+            return;
+        }
+
+        const verified = state.records.filter(
+            r => r.applicationNo && r.applicationNo.trim() !== ''
+        );
+
+        const unmatched = state.records.filter(
+            r => !r.applicationNo || !r.applicationNo.trim()
+        );
+
+        if (verified.length > EXPORT_LIMIT) {
+            alert(
+                `There are ${verified.length} records with extracted application numbers. This exceeds the 310-record export limit. No verified records will be removed automatically.`
+            );
+            return;
+        }
+
+        const needed = EXPORT_LIMIT - verified.length;
+
+        if (unmatched.length < needed) {
+            alert('Not enough unmatched records to complete the selection.');
+            return;
+        }
+
+        const selectedUnmatched = shuffle(unmatched).slice(0, needed);
+
+        const existingReferences = new Set(
+            state.records
+                .map(r => r.internalReference)
+                .filter(Boolean)
+        );
+
+        selectedUnmatched.forEach(r => {
+            if (!r.internalReference) {
+                r.internalReference =
+                    generateInternalReference(existingReferences);
+            }
+        });
+
+        // Matched records remain first.
+        // Selected unmatched records are randomized at the bottom.
+        state.exportSelection = [
+            ...verified,
+            ...shuffle(selectedUnmatched)
+        ];
+
+        saveLocalRecords();
+
+        const btn = document.getElementById('generate310Btn');
+
+        if (btn) {
+            btn.innerHTML =
+                '<i class="fa-solid fa-check me-1"></i> 310 Records Prepared';
+        }
+
+        alert(
+            `Selection prepared successfully!\n\nGenuine extracted IDs: ${verified.length}\nSelected unmatched records: ${needed}\nTotal: ${state.exportSelection.length}\n\nYou can now export your Excel file.`
+        );
+    }
+
+    // Load ExcelJS dynamically for professional Excel formatting.
+    function loadExcelJS() {
+        return new Promise((resolve, reject) => {
+            if (window.ExcelJS) {
+                resolve(window.ExcelJS);
+                return;
+            }
+
+            const script = document.createElement('script');
+
+            script.src =
+                'https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js';
+
+            script.onload = () => {
+                if (window.ExcelJS) {
+                    resolve(window.ExcelJS);
+                } else {
+                    reject(new Error('ExcelJS failed to initialize.'));
+                }
+            };
+
+            script.onerror = () => {
+                reject(new Error('Unable to load ExcelJS. Check your internet connection.'));
+            };
+
+            document.head.appendChild(script);
+        });
+    }
+
+    async function exportToExcel() {
+        if (!state.exportSelection) {
+            alert(
+                'First click Prepare 310 Records, then click Export Excel.'
+            );
+            return;
+        }
+
+        if (state.exportSelection.length !== EXPORT_LIMIT) {
+            alert('Export cancelled: the selection is not exactly 310 records.');
+            return;
+        }
+
+        const btn = els.exportBtn;
+
+        if (btn) {
+            btn.disabled = true;
+            btn.textContent = 'Preparing Excel...';
+        }
+
+        try {
+            const ExcelJS = await loadExcelJS();
+
+            const workbook = new ExcelJS.Workbook();
+
+            workbook.creator = 'Gongola Tech Lab';
+            workbook.subject = 'Enriched Master Records';
+            workbook.title = 'Tangwami Enriched Records';
+            workbook.created = new Date();
+
+            const sheet = workbook.addWorksheet(
+                'Enriched Records',
+                {
+                    views: [
+                        {
+                            state: 'frozen',
+                            ySplit: 1,
+                            xSplit: 0,
+                            showGridLines: false
+                        }
+                    ]
+                }
+            );
+
+            sheet.columns = [
+                { header: 'S/N', key: 'sn', width: 8 },
+                { header: 'NAME', key: 'name', width: 30 },
+                { header: 'PHONE', key: 'phone', width: 17 },
+                { header: 'LG', key: 'lg', width: 20 },
+                { header: 'WARD', key: 'ward', width: 23 },
+                { header: 'POSITION', key: 'position', width: 16 },
+                { header: 'QUALIFICATION', key: 'qualification', width: 20 },
+                { header: 'APPLICATION NO', key: 'applicationNo', width: 23 },
+                {
+                    header: 'INTERNAL REFERENCE (NOT OFFICIAL)',
+                    key: 'internalReference',
+                    width: 34
+                },
+                { header: 'ID STATUS', key: 'status', width: 19 }
+            ];
+
+            // Professional header.
+            const header = sheet.getRow(1);
+
+            header.height = 32;
+
+            header.eachCell(cell => {
+                cell.font = {
+                    name: 'Arial',
+                    bold: true,
+                    color: { argb: 'FFFFFFFF' },
+                    size: 10
+                };
+
+                cell.fill = {
+                    type: 'pattern',
+                    pattern: 'solid',
+                    fgColor: { argb: 'FF17365D' }
+                };
+
+                cell.alignment = {
+                    vertical: 'middle',
+                    horizontal: 'center',
+                    wrapText: true
+                };
+
+                cell.border = {
+                    bottom: {
+                        style: 'medium',
+                        color: { argb: 'FF4472C4' }
+                    }
+                };
+            });
+
+            state.exportSelection.forEach((r, index) => {
+                const isVerified = Boolean(
+                    r.applicationNo &&
+                    r.applicationNo.trim()
+                );
+
+                const row = sheet.addRow({
+                    sn: index + 1,
+                    name: r.name || '',
+                    phone: String(r.phone || ''),
+                    lg: r.lg || '',
+                    ward: r.ward || '',
+                    position: r.position || '',
+                    qualification: r.qualification || '',
+                    applicationNo: isVerified
+                        ? r.applicationNo
+                        : '',
+                    internalReference: isVerified
+                        ? ''
+                        : r.internalReference,
+                    status: isVerified
+                        ? 'EXTRACTED / VERIFIED'
+                        : 'INTERNAL REFERENCE'
+                });
+
+                row.height = 22;
+
+                row.eachCell(cell => {
+                    cell.font = {
+                        name: 'Arial',
+                        size: 10,
+                        color: { argb: 'FF222222' }
+                    };
+
+                    cell.alignment = {
+                        vertical: 'middle',
+                        horizontal: 'left'
+                    };
+
+                    cell.border = {
+                        bottom: {
+                            style: 'hair',
+                            color: { argb: 'FFD9E2F3' }
+                        }
+                    };
+                });
+
+                // Alternating row backgrounds.
+                if (index % 2 === 1) {
+                    row.eachCell(cell => {
+                        cell.fill = {
+                            type: 'pattern',
+                            pattern: 'solid',
+                            fgColor: { argb: 'FFF2F6FA' }
+                        };
+                    });
+                }
+
+                // Genuine application numbers.
+                if (isVerified) {
+                    row.getCell('applicationNo').font = {
+                        name: 'Arial',
+                        bold: true,
+                        color: { argb: 'FF008000' },
+                        size: 10
+                    };
+                } else {
+                    row.getCell('internalReference').font = {
+                        name: 'Arial',
+                        bold: true,
+                        color: { argb: 'FFBF7000' },
+                        size: 10
+                    };
+
+                    row.getCell('status').font = {
+                        name: 'Arial',
+                        bold: true,
+                        color: { argb: 'FFBF7000' },
+                        size: 9
+                    };
+                }
+
+                row.getCell('sn').alignment = {
+                    horizontal: 'center',
+                    vertical: 'middle'
+                };
+
+                row.getCell('phone').numFmt = '@';
+                row.getCell('applicationNo').numFmt = '@';
+                row.getCell('internalReference').numFmt = '@';
+            });
+
+            // Enable Excel filters.
+            sheet.autoFilter = {
+                from: 'A1',
+                to: 'J311'
+            };
+
+            // Page setup.
+            sheet.pageSetup = {
+                paperSize: 9,
+                orientation: 'landscape',
+                fitToPage: true,
+                fitToWidth: 1,
+                fitToHeight: 0,
+                margins: {
+                    left: 0.25,
+                    right: 0.25,
+                    top: 0.5,
+                    bottom: 0.5,
+                    header: 0.2,
+                    footer: 0.2
+                }
+            };
+
+            sheet.headerFooter.oddFooter =
+                '&L Gongola Tech Lab &R Page &P of &N';
+
+            // Confirm exact record count before download.
+            if (sheet.rowCount !== 311) {
+                throw new Error(
+                    'Excel validation failed: expected 310 records plus one header.'
+                );
+            }
+
+            const buffer = await workbook.xlsx.writeBuffer();
+
+            const blob = new Blob(
+                [buffer],
+                {
+                    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+                }
+            );
+
+            const url = URL.createObjectURL(blob);
+
+            const link = document.createElement('a');
+
+            link.href = url;
+
+            link.download =
+                'Tangwami_310_Enriched_' +
+                new Date().toISOString().slice(0, 10) +
+                '.xlsx';
+
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+
+            setTimeout(() => URL.revokeObjectURL(url), 2000);
+
+            alert(
+                'Excel exported successfully!\n\n310 data records exported.\n144 or fewer verified IDs preserved.\nSelected unmatched records placed at the bottom.'
+            );
+
+        } catch (err) {
+            console.error('Excel export error:', err);
+
+            alert(
+                'Excel export failed: ' + err.message
+            );
+
+        } finally {
+            if (btn) {
+                btn.disabled = false;
+                btn.innerHTML =
+                    '<i class="fa-solid fa-file-excel me-1"></i> Export Excel';
+            }
+        }
     }
 
     function renderTable() {
@@ -481,7 +868,7 @@
             ? els.filterSelect.value
             : 'all';
 
-        const filteredRecords = state.records
+        const filtered = state.records
             .map((r, originalIdx) => ({
                 ...r,
                 originalIdx
@@ -496,70 +883,72 @@
                 return true;
             });
 
-        if (filteredRecords.length === 0) {
+        if (filtered.length === 0) {
             els.tableBody.innerHTML =
-                `<tr><td colspan="8" class="text-center text-muted py-5">No records match the current view.</td></tr>`;
-
+                '<tr><td colspan="8" class="text-center text-muted py-5">No records match the current view.</td></tr>';
             return;
         }
 
-        filteredRecords.forEach((r) => {
-            const hasId = r.applicationNo &&
-                r.applicationNo.trim() !== '';
+        filtered.forEach(r => {
+            const hasId = Boolean(
+                r.applicationNo &&
+                r.applicationNo.trim()
+            );
 
             const tr = document.createElement('tr');
 
-            if (hasId) {
-                tr.className = 'row-matched';
-            }
+            if (hasId) tr.className = 'row-matched';
+
+            const values = [
+                r.sn,
+                r.name,
+                r.phone,
+                r.lg,
+                r.ward,
+                r.position,
+                r.qualification,
+                r.applicationNo
+            ];
 
             tr.innerHTML = `
-                <td class="fw-bold text-center">${r.sn}</td>
-                <td><input type="text" value="${escapeHtml(r.name)}" data-index="${r.originalIdx}" data-field="name" class="table-input"></td>
-                <td><input type="text" value="${escapeHtml(r.phone)}" data-index="${r.originalIdx}" data-field="phone" class="table-input"></td>
-                <td><input type="text" value="${escapeHtml(r.lg)}" data-index="${r.originalIdx}" data-field="lg" class="table-input"></td>
-                <td><input type="text" value="${escapeHtml(r.ward)}" data-index="${r.originalIdx}" data-field="ward" class="table-input"></td>
-                <td><input type="text" value="${escapeHtml(r.position)}" data-index="${r.originalIdx}" data-field="position" class="table-input"></td>
-                <td><input type="text" value="${escapeHtml(r.qualification)}" data-index="${r.originalIdx}" data-field="qualification" class="table-input"></td>
-                <td>
-                    <input type="text"
-                    value="${escapeHtml(r.applicationNo)}"
-                    data-index="${r.originalIdx}"
-                    data-field="applicationNo"
-                    class="table-input fw-bold ${hasId ? 'text-success' : 'border-danger'}"
-                    placeholder="${escapeHtml(r.temporaryReference || 'Missing ID')}">
-                </td>
+                <td class="fw-bold text-center">${escapeHtml(r.sn)}</td>
+                ${['name','phone','lg','ward','position','qualification','applicationNo'].map((field, i) => `
+                    <td>
+                        <input
+                            type="text"
+                            value="${escapeHtml(values[i + 1])}"
+                            data-index="${r.originalIdx}"
+                            data-field="${field}"
+                            class="table-input ${field === 'applicationNo' && hasId ? 'text-success fw-bold' : ''}"
+                            ${field === 'applicationNo' && !hasId ? 'placeholder="Not extracted"' : ''}
+                        >
+                    </td>
+                `).join('')}
             `;
 
             els.tableBody.appendChild(tr);
         });
 
         document.querySelectorAll('.table-input').forEach(input => {
-            input.addEventListener('input', (e) => {
-                const idx = parseInt(e.target.dataset.index);
+            input.addEventListener('change', e => {
+                const idx = Number(e.target.dataset.index);
                 const field = e.target.dataset.field;
 
                 state.records[idx][field] = e.target.value;
 
-                if (
-                    field === 'applicationNo' &&
-                    e.target.value.trim() !== ''
-                ) {
-                    state.records[idx].temporaryReference = '';
+                if (field === 'applicationNo') {
+                    if (e.target.value.trim()) {
+                        state.records[idx].internalReference = '';
+                    }
                 }
 
-                if (
-                    field === 'applicationNo' &&
-                    e.target.value.trim() === ''
-                ) {
-                    if (!state.records[idx].temporaryReference) {
-                        const existingIDs = new Set(
-                            state.records.map(r => r.temporaryReference).filter(Boolean)
-                        );
+                state.exportSelection = null;
 
-                        state.records[idx].temporaryReference =
-                            generateTemporaryID(existingIDs);
-                    }
+                const btn = document.getElementById('generate310Btn');
+
+                if (btn) {
+                    btn.innerHTML =
+                        '<i class="fa-solid fa-shuffle me-1"></i> Prepare 310 Records';
                 }
 
                 updateStats();
@@ -568,118 +957,44 @@
     }
 
     function clearAll() {
-        if (confirm(
+        if (!confirm(
             'Are you sure you want to reset everything and clear saved data?'
-        )) {
-            state.files = [];
-            state.records = [];
-            state.unmatchedFiles = [];
+        )) return;
 
-            localStorage.removeItem(MASTER_KEY);
+        state.files = [];
+        state.records = [];
+        state.unmatchedFiles = [];
+        state.exportSelection = null;
 
-            if (els.fileInput) els.fileInput.value = '';
-            if (els.masterFileInput) els.masterFileInput.value = '';
+        localStorage.removeItem(MASTER_KEY);
 
-            if (els.unmatchedAlert) {
-                els.unmatchedAlert.style.display = 'none';
-            }
+        if (els.fileInput) els.fileInput.value = '';
+        if (els.masterFileInput) els.masterFileInput.value = '';
 
-            updateMasterStatusUI();
-            updateStats();
-        }
-    }
-
-    function exportToExcel() {
-        const header = [
-            'S/N',
-            'NAME',
-            'PHONE',
-            'LG',
-            'WARD',
-            'POSITION',
-            'QUALIFICATION',
-            'APPLICATION NO',
-            'TEMPORARY REFERENCE'
-        ];
-
-        const rows = [header];
-
-        state.records.forEach((r, i) => {
-            rows.push([
-                i + 1,
-                r.name || '',
-                r.phone || '',
-                r.lg || '',
-                r.ward || '',
-                r.position || '',
-                r.qualification || '',
-                r.applicationNo || '',
-                r.temporaryReference || ''
-            ]);
-        });
-
-        if (rows.length === 1) {
-            alert('No records available for export. Upload your Master Excel file first.');
-            return;
+        if (els.unmatchedAlert) {
+            els.unmatchedAlert.style.display = 'none';
         }
 
-        const ws = XLSX.utils.aoa_to_sheet(rows);
+        updateMasterStatusUI();
+        updateStats();
 
-        if (ws['!ref']) {
-            const range = XLSX.utils.decode_range(ws['!ref']);
+        const btn = document.getElementById('generate310Btn');
 
-            for (let R = 1; R <= range.e.r; R++) {
-                [2, 7, 8].forEach(C => {
-                    const addr = XLSX.utils.encode_cell({
-                        r: R,
-                        c: C
-                    });
-
-                    if (ws[addr]) {
-                        ws[addr].t = 's';
-                        ws[addr].v = String(ws[addr].v);
-                        ws[addr].z = '@';
-                    }
-                });
-            }
+        if (btn) {
+            btn.innerHTML =
+                '<i class="fa-solid fa-shuffle me-1"></i> Prepare 310 Records';
         }
-
-        ws['!cols'] = [
-            { wch: 6 },
-            { wch: 25 },
-            { wch: 15 },
-            { wch: 14 },
-            { wch: 18 },
-            { wch: 12 },
-            { wch: 18 },
-            { wch: 20 },
-            { wch: 24 }
-        ];
-
-        const wb = XLSX.utils.book_new();
-
-        XLSX.utils.book_append_sheet(
-            wb,
-            ws,
-            'Enriched Records'
-        );
-
-        XLSX.writeFile(
-            wb,
-            'Tangwami_INEC_Enriched_' +
-            new Date().toISOString().slice(0, 10) +
-            '.xlsx'
-        );
     }
 
     function escapeHtml(str) {
-        if (!str) return '';
+        if (str === null || str === undefined) return '';
 
         return String(str)
             .replace(/&/g, '&amp;')
             .replace(/</g, '&lt;')
             .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;');
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
     }
 
     document.addEventListener('DOMContentLoaded', init);
