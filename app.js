@@ -1,5 +1,5 @@
 (function () {
-    const STORAGE_KEY = 'dataextract_300_records_v4';
+    const STORAGE_KEY = 'dataextract_300_records_v5';
     const MASTER_KEY = 'dataextract_300_master_v2';
     
     const state = { 
@@ -50,7 +50,6 @@
     function init() {
         if (!els.dropZone) return;
 
-        // Update master status badge on load
         updateMasterStatusUI();
 
         if (els.masterFileInput) {
@@ -173,13 +172,14 @@
             if (els.progressText) els.progressText.textContent = `Processing file ${i + 1} of ${state.files.length}: ${file.name}`;
 
             try {
-                let text = '';
-                if (file.type === 'application/pdf' || file.name.endsWith('.pdf')) {
-                    text = await extractTextFromPDF(file);
-                } else {
-                    text = await extractTextFromImage(file);
+                let pdfFile = file;
+                // If it's an image (.jpg, .jpeg, .png), convert it to PDF in-memory first using jsPDF!
+                if (!file.type.includes('pdf') && !file.name.endsWith('.pdf')) {
+                    if (els.progressText) els.progressText.textContent = `Converting image to PDF: ${file.name}`;
+                    pdfFile = await convertImageToPDF(file);
                 }
-                
+
+                const text = await extractTextFromPDF(pdfFile);
                 let record = parseFlexibleText(text);
 
                 // Auto-match with master list
@@ -219,6 +219,36 @@
         updateStats();
     }
 
+    // Convert uploaded image to PDF in-memory using jsPDF
+    async function convertImageToPDF(imageFile) {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = function (e) {
+                const img = new Image();
+                img.onload = function () {
+                    try {
+                        const { jsPDF } = window.jspdf;
+                        const doc = new jsPDF({
+                            orientation: img.width > img.height ? 'landscape' : 'portrait',
+                            unit: 'px',
+                            format: [img.width, img.height]
+                        });
+                        doc.addImage(img, 'JPEG', 0, 0, img.width, img.height);
+                        const pdfOutput = doc.output('blob');
+                        const pdfFile = new File([pdfOutput], imageFile.name.replace(/\.[^/.]+$/, "") + '.pdf', { type: 'application/pdf' });
+                        resolve(pdfFile);
+                    } catch (err) {
+                        reject(err);
+                    }
+                };
+                img.onerror = reject;
+                img.src = e.target.result;
+            };
+            reader.onerror = reject;
+            reader.readAsDataURL(imageFile);
+        });
+    }
+
     async function extractTextFromPDF(file) {
         const arrayBuffer = await file.arrayBuffer();
         const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
@@ -226,48 +256,23 @@
         for (let i = 1; i <= pdf.numPages; i++) {
             const page = await pdf.getPage(i);
             const tokenized = await page.getTextContent();
-            fullText += tokenized.items.map(item => item.str).join(' ') + '\n';
+            
+            // If PDF page has no extractable text layer (e.g. scanned image PDF), fallback to OCR via Tesseract on page canvas
+            if (tokenized.items.length === 0) {
+                const viewport = page.getViewport({ scale: 2.0 });
+                const canvas = document.createElement('canvas');
+                canvas.width = viewport.width;
+                canvas.height = viewport.height;
+                const ctx = canvas.getContext('2d');
+                await page.render({ canvasContext: ctx, viewport: viewport }).promise;
+                
+                const result = await Tesseract.recognize(canvas, 'eng');
+                fullText += result.data.text + '\n';
+            } else {
+                fullText += tokenized.items.map(item => item.str).join(' ') + '\n';
+            }
         }
         return fullText;
-    }
-
-    async function extractTextFromImage(file) {
-        return new Promise((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onload = async function (e) {
-                const img = new Image();
-                img.onload = async function () {
-                    const canvas = document.createElement('canvas');
-                    let width = img.width;
-                    let height = img.height;
-                    const maxDim = 1400;
-                    if (width > maxDim || height > maxDim) {
-                        if (width > height) {
-                            height = Math.round((height * maxDim) / width);
-                            width = maxDim;
-                        } else {
-                            width = Math.round((width * maxDim) / height);
-                            height = maxDim;
-                        }
-                    }
-                    canvas.width = width;
-                    canvas.height = height;
-                    const ctx = canvas.getContext('2d');
-                    ctx.drawImage(img, 0, 0, width, height);
-
-                    try {
-                        const result = await Tesseract.recognize(canvas, 'eng');
-                        resolve(result.data.text);
-                    } catch (err) {
-                        reject(err);
-                    }
-                };
-                img.onerror = () => reject(new Error('Failed to load image element'));
-                img.src = e.target.result;
-            };
-            reader.onerror = () => reject(new Error('Failed to read file reader'));
-            reader.readAsDataURL(file);
-        });
     }
 
     function parseFlexibleText(text) {
