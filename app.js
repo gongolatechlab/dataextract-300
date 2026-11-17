@@ -1,5 +1,10 @@
 (function () {
-    const state = { files: [], records: [] };
+    const STORAGE_KEY = 'dataextract_300_records_v1';
+    const state = { 
+        files: [], 
+        records: loadLocalRecords() 
+    };
+
     const els = {
         dropZone: document.getElementById('dropZone'),
         fileInput: document.getElementById('fileInput'),
@@ -14,6 +19,24 @@
         progressText: document.getElementById('progressText'),
         tableBody: document.getElementById('tableBody')
     };
+
+    function loadLocalRecords() {
+        try {
+            const saved = localStorage.getItem(STORAGE_KEY);
+            return saved ? JSON.parse(saved) : [];
+        } catch (e) {
+            console.error('Failed to load local records:', e);
+            return [];
+        }
+    }
+
+    function saveLocalRecords() {
+        try {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(state.records));
+        } catch (e) {
+            console.error('Failed to save local records:', e);
+        }
+    }
 
     function init() {
         if (!els.dropZone) return;
@@ -31,6 +54,7 @@
         if (els.clearBtn) els.clearBtn.addEventListener('click', clearAll);
         if (els.addBtn) els.addBtn.addEventListener('click', addRecord);
         if (els.exportBtn) els.exportBtn.addEventListener('click', exportToExcel);
+        
         updateStats();
     }
 
@@ -62,6 +86,8 @@
             if (!r.name || !r.phone || !r.lg || !r.position || !r.applicationNo) missing++;
         });
         els.missingCount.textContent = missing;
+        
+        saveLocalRecords();
         renderTable();
     }
 
@@ -87,7 +113,7 @@
             } catch (err) {
                 console.error(`Error processing ${file.name}:`, err);
                 state.records.push({
-                    name: `Error: ${file.name}`,
+                    name: `Error: ${file.name} (${err.message || 'OCR Failed'})`,
                     phone: '', lg: '', ward: '', position: '', institution: '', applicationNo: ''
                 });
             }
@@ -98,7 +124,6 @@
             if (els.progressContainer) els.progressContainer.style.display = 'none';
         }, 1500);
         
-        // Reset file input so same files can be re-selected if needed
         state.files = [];
         if (els.fileInput) els.fileInput.value = '';
         updateStats();
@@ -125,7 +150,7 @@
                     const canvas = document.createElement('canvas');
                     let width = img.width;
                     let height = img.height;
-                    const maxDim = 1600;
+                    const maxDim = 1200; // Optimized for mobile memory
                     if (width > maxDim || height > maxDim) {
                         if (width > height) {
                             height = Math.round((height * maxDim) / width);
@@ -141,22 +166,21 @@
                     ctx.drawImage(img, 0, 0, width, height);
 
                     try {
-                        const result = await Tesseract.recognize(canvas, 'eng', {
-                            logger: m => {
-                                if (m.status === 'recognizing text' && els.progressText) {
-                                    els.progressText.textContent = `OCR Scanning: ${Math.round(m.progress * 100)}% - ${file.name}`;
-                                }
-                            }
-                        });
-                        resolve(result.data.text);
+                        const worker = await Tesseract.createWorker('eng');
+                        const ret = await worker.recognize(canvas);
+                        await worker.terminate();
+                        resolve(ret.data.text);
                     } catch (err) {
-                        reject(err);
+                        // Fallback to static recognize if worker fails
+                        Tesseract.recognize(canvas, 'eng').then(res => {
+                            resolve(res.data.text);
+                        }).catch(e => reject(e));
                     }
                 };
-                img.onerror = reject;
+                img.onerror = () => reject(new Error('Failed to load image element'));
                 img.src = e.target.result;
             };
-            reader.onerror = reject;
+            reader.onerror = () => reject(new Error('Failed to read file reader'));
             reader.readAsDataURL(file);
         });
     }
@@ -191,7 +215,7 @@
         if (!els.tableBody) return;
         els.tableBody.innerHTML = '';
         if (state.records.length === 0) {
-            els.tableBody.innerHTML = `<tr><td colspan="9" class="text-center text-muted py-5">No records loaded yet. Upload your PDF or image slips above to begin extraction.</td></tr>`;
+            els.tableBody.innerHTML = `<tr><td colspan="9" class="text-center text-muted py-5">No records saved. Upload your PDF or image slips above to begin.</td></tr>`;
             return;
         }
 
@@ -214,6 +238,7 @@
         document.querySelectorAll('.table-input').forEach(input => {
             input.addEventListener('input', (e) => {
                 state.records[e.target.dataset.index][e.target.dataset.field] = e.target.value;
+                saveLocalRecords();
             });
         });
 
@@ -231,9 +256,10 @@
     }
 
     function clearAll() {
-        if (confirm('Are you sure you want to clear all records?')) {
+        if (confirm('Are you sure you want to clear all saved records?')) {
             state.files = [];
             state.records = [];
+            localStorage.removeItem(STORAGE_KEY);
             if (els.fileInput) els.fileInput.value = '';
             updateStats();
         }
