@@ -1,0 +1,104 @@
+* { box-sizing: border-box; }
+:root {
+  --bg: #f5f7fb;
+  --panel: #ffffff;
+  --ink: #1a2238;
+  --muted: #6b7280;
+  --line: #e5e7eb;
+  --primary: #2563eb;
+  --success: #16a34a;
+  --warn: #f59e0b;
+  --danger: #dc2626;
+  --dup-bg: #fff7ed;
+  --missing-border: #fca5a5;
+}
+html, body { margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--ink);
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+.topbar {
+  background: linear-gradient(135deg, #1e3a8a, #2563eb);
+  color: #fff;
+  padding: 18px 20px;
+}
+.topbar h1 { margin: 0; font-size: 1.5rem; font-weight: 700; letter-spacing: -0.5px; }
+.topbar h1 .accent { color: #fb923c; }
+.topbar .sub { margin: 4px 0 0; font-size: 0.85rem; opacity: 0.85; }
+main { flex: 1; padding: 16px; max-width: 1400px; margin: 0 auto; width: 100%; }
+.panel {
+  background: var(--panel);
+  border-radius: 12px;
+  padding: 16px;
+  margin-bottom: 16px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+}
+.upload-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  padding: 10px 16px; border-radius: 8px; border: 1px solid var(--line);
+  background: #fff; color: var(--ink); font-size: 0.95rem; font-weight: 600;
+  cursor: pointer; transition: transform 0.05s;
+}
+.btn:active { transform: scale(0.97); }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
+.btn.success { background: var(--success); border-color: var(--success); color: #fff; }
+.btn.small { padding: 6px 12px; font-size: 0.85rem; }
+.progress-wrap { margin-top: 12px; }
+.progress { height: 8px; background: var(--line); border-radius: 4px; overflow: hidden; }
+.progress-fill { height: 100%; width: 0; background: var(--primary); transition: width 0.2s; }
+.progress-text { font-size: 0.85rem; color: var(--muted); margin-top: 6px; }
+.stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 16px; }
+.stat {
+  background: var(--panel); padding: 14px; border-radius: 12px;
+  text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+}
+.stat .num { font-size: 1.75rem; font-weight: 700; line-height: 1; }
+.stat .lbl { font-size: 0.7rem; color: var(--muted); margin-top: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
+.stat.warn .num { color: var(--warn); }
+.stat.bad .num { color: var(--danger); }
+.table-panel { padding: 0; overflow: hidden; }
+.table-toolbar {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 12px 16px; border-bottom: 1px solid var(--line);
+}
+.table-toolbar h2 { margin: 0; font-size: 1.05rem; }
+.table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+table { border-collapse: collapse; width: 100%; min-width: 1000px; }
+thead th {
+  background: #f9fafb; text-align: left; padding: 10px 8px;
+  font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.5px;
+  color: var(--muted); border-bottom: 1px solid var(--line); white-space: nowrap;
+}
+tbody td { padding: 4px 6px; border-bottom: 1px solid var(--line); }
+tbody td.sn { text-align: center; font-weight: 600; color: var(--muted); width: 44px; }
+tbody input {
+  width: 100%; min-width: 90px; padding: 7px 9px; border: 1px solid transparent;
+  border-radius: 6px; font-size: 0.9rem; background: transparent; color: var(--ink);
+  font-family: inherit;
+}
+tbody input:focus { outline: none; border-color: var(--primary); background: #fff; }
+tbody input.missing { border-color: var(--missing-border); background: #fef2f2; }
+tbody tr.dup { background: var(--dup-bg); }
+tbody tr.dup td.sn::before { content: "\26A0"; margin-right: 3px; color: var(--warn); }
+.del-btn {
+  background: transparent; border: none; color: var(--danger); font-size: 1.1rem;
+  cursor: pointer; padding: 4px 8px; border-radius: 4px;
+}
+.del-btn:active { background: #fee2e2; }
+.empty { padding: 32px 16px; text-align: center; color: var(--muted); font-size: 0.9rem; }
+footer { text-align: center; padding: 16px; color: var(--muted); font-size: 0.8rem; }
+footer a { color: var(--primary); }
+@media (max-width: 640px) {
+  .topbar h1 { font-size: 1.25rem; }
+  main { padding: 10px; }
+  .stats { gap: 6px; }
+  .stat { padding: 10px; }
+  .stat .num { font-size: 1.4rem; }
+  .btn { padding: 9px 12px; font-size: 0.88rem; }
+}
