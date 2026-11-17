@@ -1,5 +1,5 @@
 (function () {
-    const STORAGE_KEY = 'dataextract_300_records_v2';
+    const STORAGE_KEY = 'dataextract_300_records_v3';
     const MASTER_KEY = 'dataextract_300_master_v1';
     
     const state = { 
@@ -47,8 +47,6 @@
 
     function init() {
         if (!els.dropZone) return;
-        
-        // Add master list upload input dynamically to header or dropzone
         setupMasterUploadUI();
 
         els.dropZone.addEventListener('click', () => els.fileInput.click());
@@ -76,7 +74,7 @@
         const masterDiv = document.createElement('div');
         masterDiv.className = 'mt-3 pt-3 border-top';
         masterDiv.innerHTML = `
-            <div class="small fw-bold text-secondary mb-1">Optional: Load Master Excel (with names & phones to auto-match Application IDs)</div>
+            <div class="small fw-bold text-secondary mb-1">Optional: Load Master Excel (to auto-fill Application IDs & names)</div>
             <input type="file" id="masterFileInput" accept=".xlsx, .xls, .csv" class="form-control form-control-sm d-inline-block w-auto">
             <span id="masterStatus" class="ms-2 small text-muted">${state.masterData.length > 0 ? `Master loaded (${state.masterData.length} records)` : 'No master list loaded'}</span>
         `;
@@ -93,7 +91,6 @@
                     const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
                     const json = XLSX.utils.sheet_to_json(firstSheet);
                     
-                    // Normalize keys
                     const normalized = json.map(row => {
                         const name = String(row['NAME'] || row['Name'] || '').trim().toUpperCase();
                         const phone = String(row['PHONE'] || row['Phone'] || '').trim();
@@ -105,10 +102,10 @@
                     });
 
                     saveMasterData(normalized);
-                    document.getElementById('masterStatus').textContent = `Master loaded successfully (${normalized.length} records)!`;
-                    alert(`Master list loaded with ${normalized.length} records. Slips uploaded will now auto-match application IDs!`);
+                    document.getElementById('masterStatus').textContent = `Master loaded (${normalized.length} records)!`;
+                    alert(`Master list loaded with ${normalized.length} records successfully!`);
                 } catch (err) {
-                    alert('Error parsing master Excel file: ' + err.message);
+                    alert('Error parsing master Excel: ' + err.message);
                 }
             };
             reader.readAsArrayBuffer(file);
@@ -166,19 +163,22 @@
                     text = await extractTextFromImage(file);
                 }
                 
-                let record = parseExtractedText(text);
+                let record = parseFlexibleText(text);
 
-                // MATCH AGAINST MASTER DATA IF APPLICATION NO IS MISSING OR TO ENRICH
+                // Auto-match with master list using phone or application number or name
                 if (state.masterData.length > 0) {
                     const matched = state.masterData.find(m => 
+                        (record.applicationNo && m.applicationNo && m.applicationNo.toLowerCase() === record.applicationNo.toLowerCase()) ||
                         (record.phone && m.phone && m.phone.includes(record.phone.slice(-9))) ||
                         (record.name && m.name && m.name.includes(record.name))
                     );
                     if (matched) {
                         if (!record.applicationNo) record.applicationNo = matched.applicationNo;
-                        if (!record.lg && matched.lg) record.lg = matched.lg;
-                        if (!record.ward && matched.ward) record.ward = matched.ward;
-                        if (!record.position && matched.position) record.position = matched.position;
+                        if (!record.name) record.name = matched.name;
+                        if (!record.phone) record.phone = matched.phone;
+                        if (!record.lg) record.lg = matched.lg;
+                        if (!record.ward) record.ward = matched.ward;
+                        if (!record.position) record.position = matched.position;
                     }
                 }
 
@@ -223,7 +223,7 @@
                     const canvas = document.createElement('canvas');
                     let width = img.width;
                     let height = img.height;
-                    const maxDim = 1200;
+                    const maxDim = 1400;
                     if (width > maxDim || height > maxDim) {
                         if (width > height) {
                             height = Math.round((height * maxDim) / width);
@@ -239,14 +239,10 @@
                     ctx.drawImage(img, 0, 0, width, height);
 
                     try {
-                        const worker = await Tesseract.createWorker('eng');
-                        const ret = await worker.recognize(canvas);
-                        await worker.terminate();
-                        resolve(ret.data.text);
+                        const result = await Tesseract.recognize(canvas, 'eng');
+                        resolve(result.data.text);
                     } catch (err) {
-                        Tesseract.recognize(canvas, 'eng').then(res => {
-                            resolve(res.data.text);
-                        }).catch(e => reject(e));
+                        reject(err);
                     }
                 };
                 img.onerror = () => reject(new Error('Failed to load image element'));
@@ -257,29 +253,44 @@
         });
     }
 
-    function parseExtractedText(text) {
+    // Flexible OCR Text Parser (No strict header dependencies)
+    function parseFlexibleText(text) {
         const cleanText = text.replace(/\s+/g, ' ');
-        const appNoMatch = cleanText.match(/APPLICATION\s*NO[:\s]*([A-Z0-9_]+)/i);
-        const nameMatch = cleanText.match(/FULL\s*NAME[:\s]*([A-Z\s]+?)(?=\s*(?:PREFERRED|EMAIL|STATE|APPLIED|LGA|NAME|ACKNOWLEDGEMENT|$))/i);
-        const phoneMatch = cleanText.match(/(?:PREFERRED\s*CONTACT\s*NUMBER|PHONE)[:\s]*([0-9]+)/i);
-        const lgMatch = cleanText.match(/LGA(?:\s*OF\s*RESIDENCE)?[:\s]*([A-Z\s]+?)(?=\s*(?:APPLIED|APPLICANT|NAME|EMAIL|STATE|ACKNOWLEDGEMENT|$))/i);
-        const posMatch = cleanText.match(/APPLIED\s*POSITION[:\s]*([A-Z\s\(\)]+?)(?=\s*(?:APPLICANT|NAME|EMAIL|STATE|LGA|ACKNOWLEDGEMENT|$))/i);
-        const instMatch = cleanText.match(/NAME\s*OF\s*INSTITUTION[:\s]*([A-Z0-9,\s]+?)(?=\s*(?:ACKNOWLEDGEMENT|INEC|VERIFICATION|Print|$))/i);
 
-        let position = '';
-        if (posMatch) {
-            const rawPos = posMatch[1].toUpperCase();
-            position = rawPos.includes('ASSISTANT') || rawPos.includes('APO') ? 'APO' : (rawPos.includes('PRESIDING') || rawPos.includes('PO') ? 'PO' : rawPos.trim());
+        // 1. Application No (Matches ADA_...)
+        let appNo = "";
+        const appMatch = cleanText.match(/(ADA_[0-9]+)/i);
+        if (appMatch) appNo = appMatch[1];
+
+        // 2. Phone Number (11 digits starting with 0)
+        let phone = "";
+        const phoneMatch = cleanText.match(/\b(0[789][0-9]{9})\b/);
+        if (phoneMatch) phone = phoneMatch[1];
+
+        // 3. Position (PO or APO)
+        let position = "";
+        const upper = cleanText.toUpperCase();
+        if (upper.includes('ASSISTANT') || upper.includes('APO')) {
+            position = 'APO';
+        } else if (upper.includes('PRESIDING') || upper.includes('PO')) {
+            position = 'PO';
+        }
+
+        // 4. LGA
+        let lg = "";
+        const lgas = ['DEMSA', 'SONG', 'YOLA NORTH', 'YOLA SOUTH', 'GIREI', 'FUFORE', 'MAFA', 'GOMBI', 'HONG', 'GANYE', 'TOUNGO', 'JADA', 'MAUYU', 'MICHETA', 'MADAGALI', 'MUBI NORTH', 'MUBI SOUTH', 'NUMAN', 'LAMURDE', 'DIEMA', 'GARKIDA'];
+        for (let l of lgas) {
+            if (upper.includes(l)) { lg = l; break; }
         }
 
         return {
-            name: nameMatch ? nameMatch[1].trim() : '',
-            phone: phoneMatch ? phoneMatch[1].trim() : '',
-            lg: lgMatch ? lgMatch[1].trim() : '',
+            name: '',
+            phone: phone,
+            lg: lg,
             ward: '',
             position: position,
-            institution: instMatch ? instMatch[1].replace(/\s+/g, ' ').trim() : '',
-            applicationNo: appNoMatch ? appNoMatch[1].trim() : ''
+            institution: '',
+            applicationNo: appNo
         };
     }
 
@@ -295,13 +306,13 @@
             const tr = document.createElement('tr');
             tr.innerHTML = `
                 <td class="fw-bold text-center">${idx + 1}</td>
-                <td><input type="text" value="${escapeHtml(r.name)}" data-index="${idx}" data-field="name" class="form-control form-control-sm table-input"></td>
-                <td><input type="text" value="${escapeHtml(r.phone)}" data-index="${idx}" data-field="phone" class="form-control form-control-sm table-input"></td>
-                <td><input type="text" value="${escapeHtml(r.lg)}" data-index="${idx}" data-field="lg" class="form-control form-control-sm table-input"></td>
-                <td><input type="text" value="${escapeHtml(r.ward)}" data-index="${idx}" data-field="ward" class="form-control form-control-sm table-input"></td>
-                <td><input type="text" value="${escapeHtml(r.position)}" data-index="${idx}" data-field="position" class="form-control form-control-sm table-input"></td>
-                <td><input type="text" value="${escapeHtml(r.institution)}" data-index="${idx}" data-field="institution" class="form-control form-control-sm table-input"></td>
-                <td><input type="text" value="${escapeHtml(r.applicationNo)}" data-index="${idx}" data-field="applicationNo" class="form-control form-control-sm table-input ${!r.applicationNo ? 'border-danger' : ''}" placeholder="Missing ID"></td>
+                <td><input type="text" value="${escapeHtml(r.name)}" data-index="${idx}" data-field="name" class="form-control form-control-sm table-input" placeholder="Name"></td>
+                <td><input type="text" value="${escapeHtml(r.phone)}" data-index="${idx}" data-field="phone" class="form-control form-control-sm table-input" placeholder="Phone"></td>
+                <td><input type="text" value="${escapeHtml(r.lg)}" data-index="${idx}" data-field="lg" class="form-control form-control-sm table-input" placeholder="LG"></td>
+                <td><input type="text" value="${escapeHtml(r.ward)}" data-index="${idx}" data-field="ward" class="form-control form-control-sm table-input" placeholder="Ward"></td>
+                <td><input type="text" value="${escapeHtml(r.position)}" data-index="${idx}" data-field="position" class="form-control form-control-sm table-input" placeholder="PO/APO"></td>
+                <td><input type="text" value="${escapeHtml(r.institution)}" data-index="${idx}" data-field="institution" class="form-control form-control-sm table-input" placeholder="Institution"></td>
+                <td><input type="text" value="${escapeHtml(r.applicationNo)}" data-index="${idx}" data-field="applicationNo" class="form-control form-control-sm table-input ${!r.applicationNo ? 'border-danger' : ''}" placeholder="Application No"></td>
                 <td class="text-center"><button class="btn btn-sm btn-outline-danger delete-row px-2 py-0" data-index="${idx}" title="Delete Row">&times;</button></td>
             `;
             els.tableBody.appendChild(tr);
