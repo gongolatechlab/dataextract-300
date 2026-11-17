@@ -3,7 +3,6 @@
     const els = {
         dropZone: document.getElementById('dropZone'),
         fileInput: document.getElementById('fileInput'),
-        processBtn: document.getElementById('processBtn'),
         clearBtn: document.getElementById('clearBtn'),
         exportBtn: document.getElementById('exportBtn'),
         addBtn: document.getElementById('addBtn'),
@@ -21,15 +20,14 @@
         els.dropZone.addEventListener('click', () => els.fileInput.click());
         els.fileInput.addEventListener('change', (e) => handleFiles(e.target.files));
         
-        els.dropZone.addEventListener('dragover', (e) => { e.preventDefault(); els.dropZone.classList.add('dragover'); });
-        els.dropZone.addEventListener('dragleave', () => els.dropZone.classList.remove('dragover'));
+        els.dropZone.addEventListener('dragover', (e) => { e.preventDefault(); els.dropZone.classList.add('bg-light'); });
+        els.dropZone.addEventListener('dragleave', () => els.dropZone.classList.remove('bg-light'));
         els.dropZone.addEventListener('drop', (e) => {
             e.preventDefault();
-            els.dropZone.classList.remove('dragover');
+            els.dropZone.classList.remove('bg-light');
             handleFiles(e.dataTransfer.files);
         });
 
-        if (els.processBtn) els.processBtn.addEventListener('click', processDocuments);
         if (els.clearBtn) els.clearBtn.addEventListener('click', clearAll);
         if (els.addBtn) els.addBtn.addEventListener('click', addRecord);
         if (els.exportBtn) els.exportBtn.addEventListener('click', exportToExcel);
@@ -38,18 +36,24 @@
 
     function handleFiles(fileList) {
         if (!fileList || fileList.length === 0) return;
-        for (let i = 0; i < fileList.length; i++) state.files.push(fileList[i]);
+        for (let i = 0; i < fileList.length; i++) {
+            state.files.push(fileList[i]);
+        }
         updateStats();
         processDocuments();
     }
 
     function updateStats() {
         els.totalRecords.textContent = state.records.length;
+        
         const seen = new Set();
         let dups = 0;
         state.records.forEach(r => {
             const key = r.applicationNo || r.phone;
-            if (key) { if (seen.has(key)) dups++; else seen.add(key); }
+            if (key) {
+                if (seen.has(key)) dups++;
+                else seen.add(key);
+            }
         });
         els.duplicateCount.textContent = dups;
 
@@ -62,18 +66,14 @@
     }
 
     async function processDocuments() {
-        if (state.files.length === 0) {
-            alert('Please select PDF or image files first.');
-            return;
-        }
+        if (state.files.length === 0) return;
         if (els.progressContainer) els.progressContainer.style.display = 'block';
-        state.records = [];
 
         for (let i = 0; i < state.files.length; i++) {
             const file = state.files[i];
             const pct = Math.round(((i + 1) / state.files.length) * 100);
             if (els.progressBar) els.progressBar.style.width = pct + '%';
-            if (els.progressText) els.progressText.textContent = `Processing ${i + 1} of ${state.files.length}: ${file.name}`;
+            if (els.progressText) els.progressText.textContent = `Processing file ${i + 1} of ${state.files.length}: ${file.name}`;
 
             try {
                 let text = '';
@@ -82,15 +82,25 @@
                 } else {
                     text = await extractTextFromImage(file);
                 }
-                state.records.push(parseExtractedText(text));
+                const parsed = parseExtractedText(text);
+                state.records.push(parsed);
             } catch (err) {
                 console.error(`Error processing ${file.name}:`, err);
-                state.records.push({ name: `Error: ${file.name}`, phone: '', lg: '', ward: '', position: '', institution: '', applicationNo: '' });
+                state.records.push({
+                    name: `Error: ${file.name}`,
+                    phone: '', lg: '', ward: '', position: '', institution: '', applicationNo: ''
+                });
             }
         }
 
-        if (els.progressText) els.progressText.textContent = 'Processing complete!';
-        setTimeout(() => { if (els.progressContainer) els.progressContainer.style.display = 'none'; }, 2000);
+        if (els.progressText) els.progressText.textContent = 'Processing completed successfully!';
+        setTimeout(() => {
+            if (els.progressContainer) els.progressContainer.style.display = 'none';
+        }, 1500);
+        
+        // Reset file input so same files can be re-selected if needed
+        state.files = [];
+        if (els.fileInput) els.fileInput.value = '';
         updateStats();
     }
 
@@ -107,14 +117,48 @@
     }
 
     async function extractTextFromImage(file) {
-        const result = await Tesseract.recognize(file, 'eng', {
-            logger: m => {
-                if (m.status === 'recognizing text' && els.progressText) {
-                    els.progressText.textContent = `OCR: ${Math.round(m.progress * 100)}% - ${file.name}`;
-                }
-            }
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = async function (e) {
+                const img = new Image();
+                img.onload = async function () {
+                    const canvas = document.createElement('canvas');
+                    let width = img.width;
+                    let height = img.height;
+                    const maxDim = 1600;
+                    if (width > maxDim || height > maxDim) {
+                        if (width > height) {
+                            height = Math.round((height * maxDim) / width);
+                            width = maxDim;
+                        } else {
+                            width = Math.round((width * maxDim) / height);
+                            height = maxDim;
+                        }
+                    }
+                    canvas.width = width;
+                    canvas.height = height;
+                    const ctx = canvas.getContext('2d');
+                    ctx.drawImage(img, 0, 0, width, height);
+
+                    try {
+                        const result = await Tesseract.recognize(canvas, 'eng', {
+                            logger: m => {
+                                if (m.status === 'recognizing text' && els.progressText) {
+                                    els.progressText.textContent = `OCR Scanning: ${Math.round(m.progress * 100)}% - ${file.name}`;
+                                }
+                            }
+                        });
+                        resolve(result.data.text);
+                    } catch (err) {
+                        reject(err);
+                    }
+                };
+                img.onerror = reject;
+                img.src = e.target.result;
+            };
+            reader.onerror = reject;
+            reader.readAsDataURL(file);
         });
-        return result.data.text;
     }
 
     function parseExtractedText(text) {
@@ -147,22 +191,22 @@
         if (!els.tableBody) return;
         els.tableBody.innerHTML = '';
         if (state.records.length === 0) {
-            els.tableBody.innerHTML = `<tr><td colspan="9" class="text-center text-muted py-4">No records loaded yet. Upload files to begin.</td></tr>`;
+            els.tableBody.innerHTML = `<tr><td colspan="9" class="text-center text-muted py-5">No records loaded yet. Upload your PDF or image slips above to begin extraction.</td></tr>`;
             return;
         }
 
         state.records.forEach((r, idx) => {
             const tr = document.createElement('tr');
             tr.innerHTML = `
-                <td>${idx + 1}</td>
-                <td><input type="text" value="${escapeHtml(r.name)}" data-index="${idx}" data-field="name" class="table-input"></td>
-                <td><input type="text" value="${escapeHtml(r.phone)}" data-index="${idx}" data-field="phone" class="table-input"></td>
-                <td><input type="text" value="${escapeHtml(r.lg)}" data-index="${idx}" data-field="lg" class="table-input"></td>
-                <td><input type="text" value="${escapeHtml(r.ward)}" data-index="${idx}" data-field="ward" class="table-input"></td>
-                <td><input type="text" value="${escapeHtml(r.position)}" data-index="${idx}" data-field="position" class="table-input"></td>
-                <td><input type="text" value="${escapeHtml(r.institution)}" data-index="${idx}" data-field="institution" class="table-input"></td>
-                <td><input type="text" value="${escapeHtml(r.applicationNo)}" data-index="${idx}" data-field="applicationNo" class="table-input"></td>
-                <td><button class="btn btn-sm btn-danger delete-row" data-index="${idx}">&times;</button></td>
+                <td class="fw-bold text-center">${idx + 1}</td>
+                <td><input type="text" value="${escapeHtml(r.name)}" data-index="${idx}" data-field="name" class="form-control form-control-sm table-input"></td>
+                <td><input type="text" value="${escapeHtml(r.phone)}" data-index="${idx}" data-field="phone" class="form-control form-control-sm table-input"></td>
+                <td><input type="text" value="${escapeHtml(r.lg)}" data-index="${idx}" data-field="lg" class="form-control form-control-sm table-input"></td>
+                <td><input type="text" value="${escapeHtml(r.ward)}" data-index="${idx}" data-field="ward" class="form-control form-control-sm table-input"></td>
+                <td><input type="text" value="${escapeHtml(r.position)}" data-index="${idx}" data-field="position" class="form-control form-control-sm table-input"></td>
+                <td><input type="text" value="${escapeHtml(r.institution)}" data-index="${idx}" data-field="institution" class="form-control form-control-sm table-input"></td>
+                <td><input type="text" value="${escapeHtml(r.applicationNo)}" data-index="${idx}" data-field="applicationNo" class="form-control form-control-sm table-input"></td>
+                <td class="text-center"><button class="btn btn-sm btn-outline-danger delete-row px-2 py-0" data-index="${idx}" title="Delete Row">&times;</button></td>
             `;
             els.tableBody.appendChild(tr);
         });
@@ -187,10 +231,12 @@
     }
 
     function clearAll() {
-        state.files = [];
-        state.records = [];
-        if (els.fileInput) els.fileInput.value = '';
-        updateStats();
+        if (confirm('Are you sure you want to clear all records?')) {
+            state.files = [];
+            state.records = [];
+            if (els.fileInput) els.fileInput.value = '';
+            updateStats();
+        }
     }
 
     function exportToExcel() {
