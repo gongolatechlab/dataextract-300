@@ -1,6 +1,6 @@
 (function () {
-    const STORAGE_KEY = 'dataextract_300_records_v3';
-    const MASTER_KEY = 'dataextract_300_master_v1';
+    const STORAGE_KEY = 'dataextract_300_records_v4';
+    const MASTER_KEY = 'dataextract_300_master_v2';
     
     const state = { 
         files: [], 
@@ -11,6 +11,8 @@
     const els = {
         dropZone: document.getElementById('dropZone'),
         fileInput: document.getElementById('fileInput'),
+        masterFileInput: document.getElementById('masterFileInput'),
+        masterStatus: document.getElementById('masterStatus'),
         clearBtn: document.getElementById('clearBtn'),
         exportBtn: document.getElementById('exportBtn'),
         addBtn: document.getElementById('addBtn'),
@@ -47,9 +49,23 @@
 
     function init() {
         if (!els.dropZone) return;
-        setupMasterUploadUI();
 
-        els.dropZone.addEventListener('click', () => els.fileInput.click());
+        // Update master status badge on load
+        updateMasterStatusUI();
+
+        if (els.masterFileInput) {
+            els.masterFileInput.addEventListener('change', handleMasterUpload);
+        }
+
+        els.dropZone.addEventListener('click', () => {
+            if (state.masterData.length === 0) {
+                alert('Please upload your Master List Excel file first before uploading slips.');
+                if (els.masterFileInput) els.masterFileInput.focus();
+                return;
+            }
+            els.fileInput.click();
+        });
+
         els.fileInput.addEventListener('change', (e) => handleFiles(e.target.files));
         
         els.dropZone.addEventListener('dragover', (e) => { e.preventDefault(); els.dropZone.classList.add('bg-light'); });
@@ -57,6 +73,10 @@
         els.dropZone.addEventListener('drop', (e) => {
             e.preventDefault();
             els.dropZone.classList.remove('bg-light');
+            if (state.masterData.length === 0) {
+                alert('Please upload your Master List Excel file first before dropping slips.');
+                return;
+            }
             handleFiles(e.dataTransfer.files);
         });
 
@@ -67,49 +87,46 @@
         updateStats();
     }
 
-    function setupMasterUploadUI() {
-        const dropZone = document.getElementById('dropZone');
-        if (!dropZone) return;
+    function updateMasterStatusUI() {
+        if (!els.masterStatus) return;
+        if (state.masterData.length > 0) {
+            els.masterStatus.className = 'mt-2 small fw-semibold text-success';
+            els.masterStatus.innerHTML = `<i class="fa-solid fa-circle-check me-1"></i> Master list loaded successfully (${state.masterData.length} records active).`;
+        } else {
+            els.masterStatus.className = 'mt-2 small fw-semibold text-danger';
+            els.masterStatus.innerHTML = `<i class="fa-solid fa-circle-exclamation me-1"></i> Master list not loaded yet. Please upload your master Excel file first.`;
+        }
+    }
 
-        const masterDiv = document.createElement('div');
-        masterDiv.className = 'mt-3 pt-3 border-top';
-        masterDiv.innerHTML = `
-            <div class="small fw-bold text-secondary mb-1">Optional: Load Master Excel (to auto-fill Application IDs & names)</div>
-            <input type="file" id="masterFileInput" accept=".xlsx, .xls, .csv" class="form-control form-control-sm d-inline-block w-auto">
-            <span id="masterStatus" class="ms-2 small text-muted">${state.masterData.length > 0 ? `Master loaded (${state.masterData.length} records)` : 'No master list loaded'}</span>
-        `;
-        dropZone.appendChild(masterDiv);
+    function handleMasterUpload(e) {
+        const file = e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = function(evt) {
+            try {
+                const data = new Uint8Array(evt.target.result);
+                const workbook = XLSX.read(data, { type: 'array' });
+                const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+                const json = XLSX.utils.sheet_to_json(firstSheet);
+                
+                const normalized = json.map(row => {
+                    const name = String(row['NAME'] || row['Name'] || '').trim().toUpperCase();
+                    const phone = String(row['PHONE'] || row['Phone'] || '').trim();
+                    const lg = String(row['LG'] || row['Lg'] || row['LGA'] || '').trim();
+                    const ward = String(row['WARD'] || row['Ward'] || '').trim();
+                    const position = String(row['POSITION'] || row['Position'] || '').trim();
+                    const appNo = String(row['APPLICATION NO'] || row['Application No'] || row['APPLICATION_NO'] || '').trim();
+                    return { name, phone, lg, ward, position, applicationNo: appNo };
+                });
 
-        document.getElementById('masterFileInput').addEventListener('change', (e) => {
-            const file = e.target.files[0];
-            if (!file) return;
-            const reader = new FileReader();
-            reader.onload = function(evt) {
-                try {
-                    const data = new Uint8Array(evt.target.result);
-                    const workbook = XLSX.read(data, { type: 'array' });
-                    const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
-                    const json = XLSX.utils.sheet_to_json(firstSheet);
-                    
-                    const normalized = json.map(row => {
-                        const name = String(row['NAME'] || row['Name'] || '').trim().toUpperCase();
-                        const phone = String(row['PHONE'] || row['Phone'] || '').trim();
-                        const lg = String(row['LG'] || row['Lg'] || row['LGA'] || '').trim();
-                        const ward = String(row['WARD'] || row['Ward'] || '').trim();
-                        const position = String(row['POSITION'] || row['Position'] || '').trim();
-                        const appNo = String(row['APPLICATION NO'] || row['Application No'] || row['APPLICATION_NO'] || '').trim();
-                        return { name, phone, lg, ward, position, applicationNo: appNo };
-                    });
-
-                    saveMasterData(normalized);
-                    document.getElementById('masterStatus').textContent = `Master loaded (${normalized.length} records)!`;
-                    alert(`Master list loaded with ${normalized.length} records successfully!`);
-                } catch (err) {
-                    alert('Error parsing master Excel: ' + err.message);
-                }
-            };
-            reader.readAsArrayBuffer(file);
-        });
+                saveMasterData(normalized);
+                updateMasterStatusUI();
+                alert(`Master list loaded with ${normalized.length} records! You can now upload PDF/image slips.`);
+            } catch (err) {
+                alert('Error parsing master Excel: ' + err.message);
+            }
+        };
+        reader.readAsArrayBuffer(file);
     }
 
     function handleFiles(fileList) {
@@ -165,7 +182,7 @@
                 
                 let record = parseFlexibleText(text);
 
-                // Auto-match with master list using phone or application number or name
+                // Auto-match with master list
                 if (state.masterData.length > 0) {
                     const matched = state.masterData.find(m => 
                         (record.applicationNo && m.applicationNo && m.applicationNo.toLowerCase() === record.applicationNo.toLowerCase()) ||
@@ -253,21 +270,17 @@
         });
     }
 
-    // Flexible OCR Text Parser (No strict header dependencies)
     function parseFlexibleText(text) {
         const cleanText = text.replace(/\s+/g, ' ');
 
-        // 1. Application No (Matches ADA_...)
         let appNo = "";
         const appMatch = cleanText.match(/(ADA_[0-9]+)/i);
         if (appMatch) appNo = appMatch[1];
 
-        // 2. Phone Number (11 digits starting with 0)
         let phone = "";
         const phoneMatch = cleanText.match(/\b(0[789][0-9]{9})\b/);
         if (phoneMatch) phone = phoneMatch[1];
 
-        // 3. Position (PO or APO)
         let position = "";
         const upper = cleanText.toUpperCase();
         if (upper.includes('ASSISTANT') || upper.includes('APO')) {
@@ -276,7 +289,6 @@
             position = 'PO';
         }
 
-        // 4. LGA
         let lg = "";
         const lgas = ['DEMSA', 'SONG', 'YOLA NORTH', 'YOLA SOUTH', 'GIREI', 'FUFORE', 'MAFA', 'GOMBI', 'HONG', 'GANYE', 'TOUNGO', 'JADA', 'MAUYU', 'MICHETA', 'MADAGALI', 'MUBI NORTH', 'MUBI SOUTH', 'NUMAN', 'LAMURDE', 'DIEMA', 'GARKIDA'];
         for (let l of lgas) {
@@ -298,7 +310,7 @@
         if (!els.tableBody) return;
         els.tableBody.innerHTML = '';
         if (state.records.length === 0) {
-            els.tableBody.innerHTML = `<tr><td colspan="9" class="text-center text-muted py-5">No records saved. Upload your PDF or image slips above to begin.</td></tr>`;
+            els.tableBody.innerHTML = `<tr><td colspan="9" class="text-center text-muted py-5">No records saved. Upload your Master List and Slips above to begin.</td></tr>`;
             return;
         }
 
